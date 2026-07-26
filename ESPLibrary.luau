@@ -83,6 +83,19 @@ local function create(cls, props)
     for k, v in pairs(props) do i[k] = v end
     return i
 end
+
+local unitCircles = {}
+local function unitCircle(n)
+    local u = unitCircles[n]
+    if u then return u end
+    u = {}
+    for i = 1, n do
+        local a = (i - 1) / n * math.pi * 2
+        u[i] = { math.cos(a), math.sin(a) }
+    end
+    unitCircles[n] = u
+    return u
+end
 local function healthColor(f)
     f = math.clamp(f, 0, 1)
     if f > 0.5 then
@@ -90,6 +103,7 @@ local function healthColor(f)
     end
     return Color3.fromRGB(255, 55, 90):Lerp(Color3.fromRGB(255, 210, 60), f * 2)
 end
+
 local PER_TARGET = {
     MaxDistance = true, Echo = true, Ring = true, Card = true,
     Velocity = true, Hull = true, Body = true, Style = true, OffScreen = true,
@@ -287,25 +301,34 @@ local function collectParts(model, opts)
     return out
 end
 local function partsBBox(parts)
-    local mn, mx
+    local has = false
+    local nx, ny, nz = math.huge, math.huge, math.huge
+    local xx, xy, xz = -math.huge, -math.huge, -math.huge
+    local abs = math.abs
     for _, p in ipairs(parts) do
         if p.Parent then
             local cf, sz = p.CFrame, p.Size
             local rv, uv, lv = cf.RightVector, cf.UpVector, cf.LookVector
-            local s = Vector3.new(
-                math.abs(rv.X) * sz.X + math.abs(uv.X) * sz.Y + math.abs(lv.X) * sz.Z,
-                math.abs(rv.Y) * sz.X + math.abs(uv.Y) * sz.Y + math.abs(lv.Y) * sz.Z,
-                math.abs(rv.Z) * sz.X + math.abs(uv.Z) * sz.Y + math.abs(lv.Z) * sz.Z
-            ) * 0.5
-            local c = cf.Position
-            local a, b = c - s, c + s
-            mn = mn and Vector3.new(math.min(mn.X,a.X), math.min(mn.Y,a.Y), math.min(mn.Z,a.Z)) or a
-            mx = mx and Vector3.new(math.max(mx.X,b.X), math.max(mx.Y,b.Y), math.max(mx.Z,b.Z)) or b
+            local sX, sY, sZ = sz.X, sz.Y, sz.Z
+            local hx = (abs(rv.X) * sX + abs(uv.X) * sY + abs(lv.X) * sZ) * 0.5
+            local hy = (abs(rv.Y) * sX + abs(uv.Y) * sY + abs(lv.Y) * sZ) * 0.5
+            local hz = (abs(rv.Z) * sX + abs(uv.Z) * sY + abs(lv.Z) * sZ) * 0.5
+            local pos = cf.Position
+            local px, py, pz = pos.X, pos.Y, pos.Z
+            if px - hx < nx then nx = px - hx end
+            if py - hy < ny then ny = py - hy end
+            if pz - hz < nz then nz = pz - hz end
+            if px + hx > xx then xx = px + hx end
+            if py + hy > xy then xy = py + hy end
+            if pz + hz > xz then xz = pz + hz end
+            has = true
         end
     end
-    if not mn then return nil end
-    return (mn + mx) * 0.5, (mx - mn)
+    if not has then return nil end
+    return Vector3.new((nx + xx) * 0.5, (ny + xy) * 0.5, (nz + xz) * 0.5),
+           Vector3.new(xx - nx, xy - ny, xz - nz)
 end
+
 local function chamClone(src, world)
     local ok, c = pcall(function() return src:Clone() end)
     if not ok or not c then return nil end
@@ -577,7 +600,10 @@ local function renderEntry(model, e, cam, camPos, now, doRay)
                 if pair.body.Transparency ~= 1 then pair.body.Transparency = 1 end
                 continue
             end
-            pair.body.Size = sz
+            if pair.lastSize ~= sz then
+                pair.body.Size = sz
+                pair.lastSize = sz
+            end
             pair.body.CFrame = real.CFrame
             if doRay and C.OcclusionSplit then
                 pair.occluded = Workspace:Raycast(camPos, real.Position - camPos, rayParams) ~= nil
@@ -595,7 +621,10 @@ local function renderEntry(model, e, cam, camPos, now, doRay)
             if forced then col = forced end
             if flashing then col, alpha = Color3.new(1,1,1), math.min(alpha, 0.1) end
 
-            pair.body.Material = mat
+            if pair.lastMat ~= mat then
+                pair.body.Material = mat
+                pair.lastMat = mat
+            end
             pair.body.Color = col
             pair.body.Transparency = alpha
         end
@@ -638,26 +667,56 @@ local function renderEntry(model, e, cam, camPos, now, doRay)
     elseif #e.echo > 0 then
         clearEcho(e); e.hist = {}
     end
-    if cRing then
+    local nseg = #e.ring
+    if cRing and nseg > 0 then
         local base = centre - Vector3.new(0, size.Y / 2, 0)
-        local lit = math.floor(#e.ring * hp + 0.5)
-        for i = 1, #e.ring do
-            local f = e.ring[i]
-            local ang = (i - 1) / #e.ring * math.pi * 2
-            local w = base + Vector3.new(math.cos(ang), 0, math.sin(ang)) * C.RingRadius
-            local sp = cam:WorldToViewportPoint(w)
-            if sp.Z > 0 then
-                f.Visible = true
-                f.Position = UDim2.fromOffset(sp.X, sp.Y)
-                local px = math.clamp(220 / math.max(dist, 1), 2, 7)
-                f.Size = UDim2.fromOffset(px, px)
-                f.BackgroundColor3 = i <= lit and hc or Color3.fromRGB(60, 65, 80)
-                f.BackgroundTransparency = i <= lit and 0 or 0.55
-            else
-                f.Visible = false
+        local camCF = cam.CFrame
+        local r = C.RingRadius
+        local fwd = camCF.LookVector
+        local fx, fz = fwd.X, fwd.Z
+        local fm = math.sqrt(fx * fx + fz * fz)
+        if fm < 1e-4 then fx, fz, fm = 0, -1, 1 end
+        local flatFwd = Vector3.new(fx / fm, 0, fz / fm)
+        local flatRight = Vector3.new(-flatFwd.Z, 0, flatFwd.X)
+        local sc = cam:WorldToViewportPoint(base)
+        if sc.Z > 0 then
+            local sr = cam:WorldToViewportPoint(base + flatRight * r)
+            local sf = cam:WorldToViewportPoint(base + flatFwd * r)
+            local cx, cy = sc.X, sc.Y
+            local ax, ay = sr.X - cx, sr.Y - cy
+            local bx, by = sf.X - cx, sf.Y - cy
+            local unit = unitCircle(nseg)
+            local lit = math.floor(nseg * hp + 0.5)
+            local px = math.floor(math.clamp(220 / math.max(dist, 1), 2, 7) + 0.5)
+            local restyle = (e.ringLit ~= lit) or (e.ringHc ~= hc) or (e.ringPx ~= px)
+            local sz2, dim
+            if restyle then
+                sz2 = UDim2.fromOffset(px, px)
+                dim = Color3.fromRGB(60, 65, 80)
+                e.ringLit, e.ringHc, e.ringPx = lit, hc, px
             end
+
+            for i = 1, nseg do
+                local f = e.ring[i]
+                local u = unit[i]
+                f.Position = UDim2.fromOffset(cx + ax * u[1] + bx * u[2],
+                                              cy + ay * u[1] + by * u[2])
+                if restyle then
+                    f.Size = sz2
+                    if i <= lit then
+                        f.BackgroundColor3 = hc
+                        f.BackgroundTransparency = 0
+                    else
+                        f.BackgroundColor3 = dim
+                        f.BackgroundTransparency = 0.55
+                    end
+                end
+                if not f.Visible then f.Visible = true end
+            end
+        else
+            for _, f in ipairs(e.ring) do f.Visible = false end
         end
-    else
+    elseif nseg > 0 then
         for _, f in ipairs(e.ring) do f.Visible = false end
     end
 
