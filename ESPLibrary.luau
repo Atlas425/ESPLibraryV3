@@ -10,6 +10,7 @@ ESP.Config = {
     Enabled          = true,
     MaxDistance      = 500,
 
+    MaxRendered      = 25,
     Body             = true,
     Style            = "Gradient",
     BodyTransparency = 0.55,
@@ -23,7 +24,6 @@ ESP.Config = {
     HullThick        = 0.14,
     HullByHealth     = false,
     HullColor        = Color3.fromRGB(255, 40, 130),
-
     Card             = true,
     Ring             = true,
     RingRadius       = 3.2,
@@ -77,13 +77,14 @@ local playerLeftConn
 local panelConns = {}
 local wantHull, wantBody, wantEcho = false, false, false
 local disabledDone = false
-
+local cand, candDist = {}, {}
+local candPrev = 0
+local trackSeq = 0
 local function create(cls, props)
     local i = Instance.new(cls)
     for k, v in pairs(props) do i[k] = v end
     return i
 end
-
 local unitCircles = {}
 local function unitCircle(n)
     local u = unitCircles[n]
@@ -477,19 +478,19 @@ local function rebuildParts(e)
     e.parts = {}
     clearEcho(e)
     local list = collectParts(e.model, e.opts)
+    local wantHullNow = cfgOf(e.opts and e.opts.config, "Hull")
     for _, p in ipairs(list) do
-        local hull = chamClone(p, hullWorld)
         local body = chamClone(p, bodyWorld)
-        if hull and body then
+        if body then
+            local hull = wantHullNow and chamClone(p, hullWorld) or nil
             e.parts[p] = { hull = hull, body = body, occluded = true }
         end
     end
     e.discovered = #list
     e.discSet = {}
     for _, p in ipairs(list) do e.discSet[p] = true end
-    e.lastRebuild = os.clock()
+    e.lastRebuild = os.clock() + (e.phase or 0)
     e.ref = nil
-
     e.hidden = false
 end
 local rayParams = RaycastParams.new()
@@ -517,15 +518,6 @@ local function renderEntry(model, e, cam, camPos, now, doRay)
     local parts = e.parts
     local oc        = e.opts and e.opts.config
     local cMaxDist  = cfgOf(oc, "MaxDistance")
-    local ref = e.ref
-    if not ref or not ref.Parent then
-        ref = next(parts)
-        e.ref = ref
-    end
-    if ref and (ref.Position - camPos).Magnitude > cMaxDist + 40 then
-        hideEntry(e)
-        return
-    end
     local cEcho     = cfgOf(oc, "Echo")
     local cRing     = cfgOf(oc, "Ring")
     local cCard     = cfgOf(oc, "Card")
@@ -588,12 +580,15 @@ local function renderEntry(model, e, cam, camPos, now, doRay)
         else
             local sz = real.Size
             if cHull then
-                local t = C.HullThick
-                pair.hull.Size = sz + Vector3.new(t, t, t) * 2
-                pair.hull.CFrame = real.CFrame
-                pair.hull.Color = C.HullByHealth and hc or C.HullColor
-                pair.hull.Transparency = 0
-            elseif pair.hull.Transparency ~= 1 then
+                if not pair.hull then pair.hull = chamClone(real, hullWorld) end
+                if pair.hull then
+                    local t = C.HullThick
+                    pair.hull.Size = sz + Vector3.new(t, t, t) * 2
+                    pair.hull.CFrame = real.CFrame
+                    pair.hull.Color = C.HullByHealth and hc or C.HullColor
+                    pair.hull.Transparency = 0
+                end
+            elseif pair.hull and pair.hull.Transparency ~= 1 then
                 pair.hull.Transparency = 1
             end
             if not cBody then
@@ -727,10 +722,12 @@ local function renderEntry(model, e, cam, camPos, now, doRay)
             local cardPos = at + Vector2.new(34, -30)
             e.card.Visible = true
             e.card.Position = UDim2.fromOffset(cardPos.X, cardPos.Y)
-            e.cardName.Text = tostring((e.opts and optValue(e.opts.name, model)) or model.Name)
-            e.cardMeta.Text = (max > 1)
+            local nm = tostring((e.opts and optValue(e.opts.name, model)) or model.Name)
+            if e.lastName ~= nm then e.cardName.Text = nm; e.lastName = nm end
+            local meta = (max > 1)
                 and string.format("%dm   ·   %d hp", math.floor(dist), math.floor(cur))
                 or string.format("%dm", math.floor(dist))
+            if e.lastMeta ~= meta then e.cardMeta.Text = meta; e.lastMeta = meta end
             e.cardBar.Size = UDim2.fromScale(hp, 1)
             e.cardBar.BackgroundColor3 = hc
             line2D(e.leader, at, cardPos, 1)
@@ -741,7 +738,6 @@ local function renderEntry(model, e, cam, camPos, now, doRay)
     else
         e.card.Visible, e.leader.Visible = false, false
     end
-
     if cVelocity then
         local ref
         for p in pairs(parts) do ref = p break end
@@ -818,13 +814,46 @@ function ESP:Init()
         local doRay = false
         if now - lastRay >= 1 / math.max(C.RayHz, 1) then doRay = true; lastRay = now end
         local camPos = cam.CFrame.Position
+        local n = 0
         for model, e in pairs(tracked) do
             if typeof(model) ~= "Instance" or not model.Parent then
                 ESP:Untrack(model)
             else
-                local ok, err = pcall(renderEntry, model, e, cam, camPos, now, doRay)
-                if not ok and C.Debug then warn("[ESP] " .. tostring(err)) end
+                local ref = e.ref
+                if not ref or not ref.Parent then
+                    ref = next(e.parts)
+                    e.ref = ref
+                end
+                local md = cfgOf(e.opts and e.opts.config, "MaxDistance")
+                local d
+                if ref then
+                    d = (ref.Position - camPos).Magnitude
+                else
+                    d = 0
+                end
+                if d > md then
+                    hideEntry(e)
+                else
+                    n = n + 1
+                    cand[n] = e
+                    candDist[n] = d
+                    e.model = model
+                end
             end
+        end
+        for i = n + 1, candPrev do cand[i] = nil; candDist[i] = nil end
+        candPrev = n
+        local budget = math.max(1, math.floor(C.MaxRendered))
+        if n > budget then
+            for i = 1, n do cand[i].sortD = candDist[i] end
+            table.sort(cand, function(a, b) return a.sortD < b.sortD end)
+            for i = budget + 1, n do hideEntry(cand[i]) end
+            n = budget
+        end
+        for i = 1, n do
+            local e = cand[i]
+            local ok, err = pcall(renderEntry, e.model, e, cam, camPos, now, doRay)
+            if not ok and C.Debug then warn("[ESP] " .. tostring(err)) end
         end
         echoVP.Visible = C.Enabled and wantEcho
         hullVP.Visible = C.Enabled and wantHull
@@ -844,7 +873,11 @@ function ESP:Track(model, opts)
             end
         end
     end
-    local e = { model = model, opts = opts, parts = {}, echo = {}, hist = {} }
+    trackSeq = trackSeq + 1
+    local e = {
+        model = model, opts = opts, parts = {}, echo = {}, hist = {},
+        phase = (trackSeq % 20) * 0.1,
+    }
     buildEntryGui(e)
     tracked[model] = e
     rebuildParts(e)
