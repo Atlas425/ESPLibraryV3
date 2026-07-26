@@ -44,6 +44,7 @@ ESP.Config = {
 
     Accent           = Color3.fromRGB(120, 240, 255),
     Debug            = false,
+    DisplayOrder     = 9999,
 
     HealthAttributes    = { "Health", "HP", "CurrentHealth", "Hp", "health" },
     MaxHealthAttributes = { "MaxHealth", "MaxHP", "maxHealth", "MaxHp" },
@@ -51,13 +52,14 @@ ESP.Config = {
     HealthSearchDepth   = 2,
     HealthValueNames    = { "Health", "HP", "CurrentHealth" },
     MaxHealthValueNames = { "MaxHealth", "MaxHP" },
+
     MinPartVolume    = 0.02,
     MaxPartsPerRig   = 64,
     SkipTransparent  = true,
     HitboxRatio      = 1,
+
     PartFilter       = nil,
 }
-
 local C = ESP.Config
 
 local STYLES = { Outline = true, Solid = true, Glass = true, Gradient = true, Ghost = true }
@@ -323,8 +325,10 @@ local function buildGui()
         or LocalPlayer:FindFirstChildOfClass("PlayerGui")
     gui = create("ScreenGui", {
         Name = "ESPLib", ResetOnSpawn = false, IgnoreGuiInset = true,
-        DisplayOrder = 9999, ZIndexBehavior = Enum.ZIndexBehavior.Sibling, Parent = parent,
+        DisplayOrder = C.DisplayOrder, ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+        Parent = parent,
     })
+    ESP.Gui = gui
     local function vp(name, z)
         local v = create("ViewportFrame", {
             Name = name, Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1,
