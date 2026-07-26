@@ -135,6 +135,7 @@ Echo = true                 EchoCount = 8             EchoSpacing = 0.07
 EchoTint = true, EchoTailColor                        Velocity = true, VelocitySecs = 0.45
 
 OffScreen = true            OffScreenRadius = 0.42    DamageFlash = true, FlashTime = 0.16
+MaxRendered = 25            Overlay2D = true
 Accent                      Debug = false
 
 MinPartVolume = 0.02        MaxPartsPerRig = 64       SkipTransparent = true
@@ -147,7 +148,25 @@ HealthValueNames, MaxHealthValueNames
 
 Styles: `Outline`, `Solid`, `Glass`, `Gradient`, `Ghost`.
 
-`RingSegments` is read when a target is first tracked, so set it before you track anything.
+`RingSegments` and `MaxRendered` are read live, so you can change them whenever.
+
+## Performance
+
+Two things bound the cost, and both matter on a busy map.
+
+`MaxRendered` is a hard cap on how many targets draw at once, nearest first. `MaxDistance`
+is a radius, not a budget — every cost here is linear in how many targets clear it, so on a
+dense map a generous radius quietly asks for thousands of parts a frame. The cap is what
+actually bounds it.
+
+All 2D (ring, leader lines, velocity, off-screen arrows) uses `Drawing`, pooled globally to
+the cap rather than allocated per target. A Roblox `Frame` carries an Instance, property
+replication, a layout pass and a ZIndex tree; `Drawing` composites in the present hook and
+skips all of it. The info card is the one exception — it stays a `Frame` because `Drawing`
+has no rounded rectangle and the card's corner radius is part of the look.
+
+One consequence worth knowing: `Drawing` renders above *all* Roblox UI, `DisplayOrder`
+included. If you have your own menu, bind `Config.Overlay2D` to its visibility.
 
 ## Notes
 

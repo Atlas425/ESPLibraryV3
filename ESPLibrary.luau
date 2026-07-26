@@ -24,6 +24,7 @@ ESP.Config = {
     HullThick        = 0.14,
     HullByHealth     = false,
     HullColor        = Color3.fromRGB(255, 40, 130),
+    Overlay2D        = true,
     Card             = true,
     Ring             = true,
     RingRadius       = 3.2,
@@ -31,17 +32,16 @@ ESP.Config = {
     Echo             = true,
     EchoCount        = 8,
     EchoSpacing      = 0.07,
+
     EchoMaxDistance  = 150,
     EchoTint         = true,
     EchoTailColor    = Color3.fromRGB(150, 40, 220),
     Velocity         = true,
     VelocitySecs     = 0.45,
-
     OffScreen        = true,
     OffScreenRadius  = 0.42,
     DamageFlash      = true,
     FlashTime        = 0.16,
-
     Accent           = Color3.fromRGB(120, 240, 255),
     Debug            = false,
     DisplayOrder     = 9999,
@@ -122,15 +122,6 @@ local function optValue(v, model)
         return ok and r or nil
     end
     return v
-end
-local function line2D(f, a, b, thick)
-    local d = b - a
-    local len = d.Magnitude
-    if len < 1 then f.Visible = false return end
-    f.Visible = true
-    f.Size = UDim2.fromOffset(len, thick)
-    f.Position = UDim2.fromOffset((a.X + b.X) / 2, (a.Y + b.Y) / 2)
-    f.Rotation = math.deg(math.atan2(d.Y, d.X))
 end
 
 local function compileSource(model, spec)
@@ -375,80 +366,114 @@ local function buildGui()
         BackgroundTransparency = 1, ZIndex = 4, Parent = gui,
     })
 end
-local function buildArrow()
-    local holder = create("Frame", {
-        Size = UDim2.fromOffset(22, 22), BackgroundTransparency = 1,
-        AnchorPoint = Vector2.new(0.5, 0.5), Visible = false, ZIndex = 6, Parent = overlay,
-    })
-    for _, arm in ipairs({ { rot = 27, y = 7 }, { rot = -27, y = 15 } }) do
-        local bar = create("Frame", {
-            Size = UDim2.fromOffset(16, 3), BackgroundColor3 = C.Accent, BorderSizePixel = 0,
-            AnchorPoint = Vector2.new(0.5, 0.5), Rotation = arm.rot,
-            Position = UDim2.fromOffset(11, arm.y), ZIndex = 6, Parent = holder,
-        })
-        create("UICorner", { CornerRadius = UDim.new(1, 0), Parent = bar })
+local HAS_DRAWING = pcall(function() return Drawing.new("Line"):Remove() end)
+local RING_DIM = Color3.fromRGB(60, 65, 80)
+local NULL = setmetatable({}, {
+    __index = function(t, k) if k == "Visible" then return false end return 0 end,
+    __newindex = function() end,
+})
+local pool = { ring = {}, line = {}, tip = {}, tri = {}, text = {} }
+local used = { ring = 0, line = 0, tip = 0, tri = 0, text = 0 }
+local peak = { ring = 0, line = 0, tip = 0, tri = 0, text = 0 }
+local function mk(kind)
+    if kind == "ring" or kind == "tip" then
+        local d = Drawing.new("Circle")
+        d.Filled, d.NumSides, d.Transparency, d.Visible = true, 10, 1, false
+        return d
+    elseif kind == "line" then
+        local d = Drawing.new("Line")
+        d.Thickness, d.Transparency, d.Visible = 1, 1, false
+        return d
+    elseif kind == "tri" then
+        local d = Drawing.new("Triangle")
+        d.Filled, d.Thickness, d.Transparency, d.Visible = true, 1, 1, false
+        return d
+    else
+        local d = Drawing.new("Text")
+        d.Size, d.Center, d.Outline, d.Transparency = 13, true, true, 1
+        d.OutlineColor, d.Visible = Color3.new(0, 0, 0), false
+        if typeof(Drawing.Fonts) == "table" then d.Font = Drawing.Fonts.Plex end
+        return d
     end
-    return holder
 end
-local function buildEntryGui(e)
-    local card = create("Frame", {
+local function take(kind)
+    if not HAS_DRAWING then return NULL end
+    local n = used[kind] + 1
+    used[kind] = n
+    local list = pool[kind]
+    local d = list[n]
+    if not d then d = mk(kind); list[n] = d end
+    if n > peak[kind] then peak[kind] = n end
+    return d
+end
+local function sweepPool()
+    for kind, list in pairs(pool) do
+        local u, p = used[kind], peak[kind]
+        for i = u + 1, p do
+            local d = list[i]
+            if d and d.Visible then d.Visible = false end
+        end
+        peak[kind] = u
+        used[kind] = 0
+    end
+end
+local function destroyPools()
+    for kind, list in pairs(pool) do
+        for i = 1, #list do pcall(function() list[i]:Remove() end) end
+        pool[kind] = {}
+        used[kind], peak[kind] = 0, 0
+    end
+end
+
+local cardPool, cardUsed, cardPeak = {}, 0, 0
+local function takeCard()
+    cardUsed = cardUsed + 1
+    local c = cardPool[cardUsed]
+    if c then
+        if cardUsed > cardPeak then cardPeak = cardUsed end
+        return c
+    end
+    local frame = create("Frame", {
         Size = UDim2.fromOffset(132, 44), BackgroundColor3 = Color3.fromRGB(10, 12, 18),
         BackgroundTransparency = 0.15, BorderSizePixel = 0, AnchorPoint = Vector2.new(0, 0.5),
         Visible = false, ZIndex = 6, Parent = overlay,
     })
-    create("UICorner", { CornerRadius = UDim.new(0, 6), Parent = card })
-    create("UIStroke", { Color = C.Accent, Thickness = 1, Transparency = 0.45, Parent = card })
-    e.cardName = create("TextLabel", {
+    create("UICorner", { CornerRadius = UDim.new(0, 6), Parent = frame })
+    create("UIStroke", { Color = C.Accent, Thickness = 1, Transparency = 0.45, Parent = frame })
+    local nameLbl = create("TextLabel", {
         Position = UDim2.fromOffset(8, 4), Size = UDim2.new(1, -16, 0, 15),
         BackgroundTransparency = 1, Font = Enum.Font.GothamBold, TextSize = 12,
         TextColor3 = Color3.new(1,1,1), TextXAlignment = Enum.TextXAlignment.Left,
-        TextTruncate = Enum.TextTruncate.AtEnd, ZIndex = 7, Parent = card,
+        TextTruncate = Enum.TextTruncate.AtEnd, ZIndex = 7, Parent = frame,
     })
-    e.cardMeta = create("TextLabel", {
+    local metaLbl = create("TextLabel", {
         Position = UDim2.fromOffset(8, 18), Size = UDim2.new(1, -16, 0, 12),
         BackgroundTransparency = 1, Font = Enum.Font.Gotham, TextSize = 10,
         TextColor3 = Color3.fromRGB(150, 160, 175), TextXAlignment = Enum.TextXAlignment.Left,
-        ZIndex = 7, Parent = card,
+        ZIndex = 7, Parent = frame,
     })
     local barBg = create("Frame", {
         Position = UDim2.fromOffset(8, 33), Size = UDim2.new(1, -16, 0, 4),
-        BackgroundColor3 = Color3.fromRGB(28, 30, 38), BorderSizePixel = 0, ZIndex = 7, Parent = card,
+        BackgroundColor3 = Color3.fromRGB(28, 30, 38), BorderSizePixel = 0, ZIndex = 7, Parent = frame,
     })
     create("UICorner", { CornerRadius = UDim.new(0, 2), Parent = barBg })
-    e.cardBar = create("Frame", {
+    local bar = create("Frame", {
         Size = UDim2.fromScale(1, 1), BackgroundColor3 = C.Accent,
         BorderSizePixel = 0, ZIndex = 8, Parent = barBg,
     })
-    create("UICorner", { CornerRadius = UDim.new(0, 2), Parent = e.cardBar })
-    e.card = card
-    e.leader = create("Frame", {
-        BackgroundColor3 = C.Accent, BackgroundTransparency = 0.35, BorderSizePixel = 0,
-        AnchorPoint = Vector2.new(0.5, 0.5), Visible = false, ZIndex = 5, Parent = overlay,
-    })
-    e.velLine = create("Frame", {
-        BackgroundColor3 = C.Accent, BorderSizePixel = 0, AnchorPoint = Vector2.new(0.5, 0.5),
-        Visible = false, ZIndex = 5, Parent = overlay,
-    })
-    e.velTip = create("Frame", {
-        Size = UDim2.fromOffset(6, 6), BackgroundColor3 = C.Accent, BorderSizePixel = 0,
-        AnchorPoint = Vector2.new(0.5, 0.5), Visible = false, ZIndex = 6, Parent = overlay,
-    })
-    create("UICorner", { CornerRadius = UDim.new(1, 0), Parent = e.velTip })
-    e.arrow = buildArrow()
-    e.arrowDist = create("TextLabel", {
-        Size = UDim2.fromOffset(46, 12), BackgroundTransparency = 1,
-        Font = Enum.Font.Gotham, Text = "", TextSize = 10,
-        TextColor3 = Color3.fromRGB(170, 180, 195), AnchorPoint = Vector2.new(0.5, 0.5),
-        Visible = false, ZIndex = 6, Parent = overlay,
-    })
-    e.ring = {}
-    for i = 1, C.RingSegments do
-        e.ring[i] = create("Frame", {
-            Size = UDim2.fromOffset(3, 3), BackgroundColor3 = C.Accent, BorderSizePixel = 0,
-            AnchorPoint = Vector2.new(0.5, 0.5), Visible = false, ZIndex = 4, Parent = overlay,
-        })
-        create("UICorner", { CornerRadius = UDim.new(1, 0), Parent = e.ring[i] })
+    create("UICorner", { CornerRadius = UDim.new(0, 2), Parent = bar })
+    c = { frame = frame, name = nameLbl, meta = metaLbl, bar = bar }
+    cardPool[cardUsed] = c
+    if cardUsed > cardPeak then cardPeak = cardUsed end
+    return c
+end
+local function sweepCards()
+    for i = cardUsed + 1, cardPeak do
+        local c = cardPool[i]
+        if c and c.frame.Visible then c.frame.Visible = false end
     end
+    cardPeak = cardUsed
+    cardUsed = 0
 end
 local function clearEcho(e)
     for _, set in ipairs(e.echo) do
@@ -464,12 +489,7 @@ local function destroyEntry(e)
         if pair.body then pcall(function() pair.body:Destroy() end) end
     end
     clearEcho(e)
-    for _, f in ipairs(e.ring or {}) do pcall(function() f:Destroy() end) end
-    for _, o in ipairs({ e.card, e.leader, e.velLine, e.velTip, e.arrow, e.arrowDist }) do
-        if o then pcall(function() o:Destroy() end) end
-    end
 end
-
 local function rebuildParts(e)
     for _, pair in pairs(e.parts) do
         if pair.hull then pcall(function() pair.hull:Destroy() end) end
@@ -500,10 +520,6 @@ local lastRay = 0
 local function hideEntry(e)
     if e.hidden then return end
     e.hidden = true
-    for _, f in ipairs(e.ring or {}) do f.Visible = false end
-    e.card.Visible, e.leader.Visible = false, false
-    e.velLine.Visible, e.velTip.Visible = false, false
-    e.arrow.Visible, e.arrowDist.Visible = false, false
     for _, pair in pairs(e.parts) do
         if pair.hull then pair.hull.Transparency = 1 end
         if pair.body then pair.body.Transparency = 1 end
@@ -514,6 +530,7 @@ local function hideEntry(e)
         end
     end
 end
+
 local function renderEntry(model, e, cam, camPos, now, doRay)
     local parts = e.parts
     local oc        = e.opts and e.opts.config
@@ -526,6 +543,9 @@ local function renderEntry(model, e, cam, camPos, now, doRay)
     local cBody     = cfgOf(oc, "Body")
     local cStyle    = cfgOf(oc, "Style")
     local cOffScr   = cfgOf(oc, "OffScreen")
+    if not C.Overlay2D then
+        cRing, cCard, cVelocity, cOffScr = false, false, false, false
+    end
 
     if now - (e.lastRebuild or 0) > 2 then
         e.lastRebuild = now
@@ -662,8 +682,8 @@ local function renderEntry(model, e, cam, camPos, now, doRay)
     elseif #e.echo > 0 then
         clearEcho(e); e.hist = {}
     end
-    local nseg = #e.ring
-    if cRing and nseg > 0 then
+    local nseg = math.max(3, math.floor(C.RingSegments))
+    if cRing then
         local base = centre - Vector3.new(0, size.Y / 2, 0)
         local camCF = cam.CFrame
         local r = C.RingRadius
@@ -682,114 +702,106 @@ local function renderEntry(model, e, cam, camPos, now, doRay)
             local bx, by = sf.X - cx, sf.Y - cy
             local unit = unitCircle(nseg)
             local lit = math.floor(nseg * hp + 0.5)
-            local px = math.floor(math.clamp(220 / math.max(dist, 1), 2, 7) + 0.5)
-            local restyle = (e.ringLit ~= lit) or (e.ringHc ~= hc) or (e.ringPx ~= px)
-            local sz2, dim
-            if restyle then
-                sz2 = UDim2.fromOffset(px, px)
-                dim = Color3.fromRGB(60, 65, 80)
-                e.ringLit, e.ringHc, e.ringPx = lit, hc, px
-            end
-
+            local rad = math.clamp(110 / math.max(dist, 1), 1, 3.5)
+            local dim = RING_DIM
             for i = 1, nseg do
-                local f = e.ring[i]
+                local d = take("ring")
                 local u = unit[i]
-                f.Position = UDim2.fromOffset(cx + ax * u[1] + bx * u[2],
-                                              cy + ay * u[1] + by * u[2])
-                if restyle then
-                    f.Size = sz2
-                    if i <= lit then
-                        f.BackgroundColor3 = hc
-                        f.BackgroundTransparency = 0
-                    else
-                        f.BackgroundColor3 = dim
-                        f.BackgroundTransparency = 0.55
-                    end
-                end
-                if not f.Visible then f.Visible = true end
+                d.Position = Vector2.new(cx + ax * u[1] + bx * u[2],
+                                         cy + ay * u[1] + by * u[2])
+                if d.Radius ~= rad then d.Radius = rad end
+                local want = (i <= lit) and hc or dim
+                if d.Color ~= want then d.Color = want end
+                local wantA = (i <= lit) and 1 or 0.45
+                if d.Transparency ~= wantA then d.Transparency = wantA end
+                if not d.Visible then d.Visible = true end
             end
-        else
-            for _, f in ipairs(e.ring) do f.Visible = false end
         end
-    elseif nseg > 0 then
-        for _, f in ipairs(e.ring) do f.Visible = false end
     end
-
     if cCard then
         local sp = cam:WorldToViewportPoint(centre + Vector3.new(0, size.Y / 2 + 1.2, 0))
         if sp.Z > 0 then
-            local at = Vector2.new(sp.X, sp.Y)
-            local cardPos = at + Vector2.new(34, -30)
-            e.card.Visible = true
-            e.card.Position = UDim2.fromOffset(cardPos.X, cardPos.Y)
+            local ax, ay = sp.X, sp.Y
+            local px, py = ax + 34, ay - 30
+            local card = takeCard()
+            local frame = card.frame
+            if not frame.Visible then frame.Visible = true end
+            frame.Position = UDim2.fromOffset(px, py)
             local nm = tostring((e.opts and optValue(e.opts.name, model)) or model.Name)
-            if e.lastName ~= nm then e.cardName.Text = nm; e.lastName = nm end
+            if card.lastName ~= nm then card.name.Text = nm; card.lastName = nm end
             local meta = (max > 1)
                 and string.format("%dm   ·   %d hp", math.floor(dist), math.floor(cur))
                 or string.format("%dm", math.floor(dist))
-            if e.lastMeta ~= meta then e.cardMeta.Text = meta; e.lastMeta = meta end
-            e.cardBar.Size = UDim2.fromScale(hp, 1)
-            e.cardBar.BackgroundColor3 = hc
-            line2D(e.leader, at, cardPos, 1)
-            e.leader.BackgroundColor3 = hc
-        else
-            e.card.Visible, e.leader.Visible = false, false
+            if card.lastMeta ~= meta then card.meta.Text = meta; card.lastMeta = meta end
+            local barW = math.floor(hp * 100 + 0.5)
+            if card.lastBar ~= barW then
+                card.bar.Size = UDim2.fromScale(hp, 1)
+                card.lastBar = barW
+            end
+            if card.lastHc ~= hc then card.bar.BackgroundColor3 = hc; card.lastHc = hc end
+            local ld = take("line")
+            ld.From, ld.To = Vector2.new(ax, ay), Vector2.new(px, py)
+            if ld.Color ~= hc then ld.Color = hc end
+            if ld.Thickness ~= 1 then ld.Thickness = 1 end
+            if ld.Transparency ~= 0.65 then ld.Transparency = 0.65 end
+            if not ld.Visible then ld.Visible = true end
         end
-    else
-        e.card.Visible, e.leader.Visible = false, false
     end
     if cVelocity then
-        local ref
-        for p in pairs(parts) do ref = p break end
-        local vel = ref and ref.AssemblyLinearVelocity or Vector3.zero
+        local vref
+        for p in pairs(parts) do vref = p break end
+        local vel = vref and vref.AssemblyLinearVelocity or Vector3.zero
         local flat = Vector3.new(vel.X, 0, vel.Z)
         if flat.Magnitude > 3 then
             local from = centre - Vector3.new(0, size.Y / 2 - 0.2, 0)
             local a = cam:WorldToViewportPoint(from)
             local b = cam:WorldToViewportPoint(from + flat * C.VelocitySecs)
             if a.Z > 0 and b.Z > 0 then
-                local av, bv = Vector2.new(a.X, a.Y), Vector2.new(b.X, b.Y)
-                line2D(e.velLine, av, bv, 2)
-                e.velLine.BackgroundColor3 = hc
-                e.velTip.Visible = true
-                e.velTip.Position = UDim2.fromOffset(bv.X, bv.Y)
-                e.velTip.BackgroundColor3 = hc
-            else
-                e.velLine.Visible, e.velTip.Visible = false, false
+                local vl = take("line")
+                vl.From, vl.To = Vector2.new(a.X, a.Y), Vector2.new(b.X, b.Y)
+                if vl.Color ~= hc then vl.Color = hc end
+                if vl.Thickness ~= 2 then vl.Thickness = 2 end
+                if vl.Transparency ~= 1 then vl.Transparency = 1 end
+                if not vl.Visible then vl.Visible = true end
+                local tp = take("tip")
+                tp.Position = Vector2.new(b.X, b.Y)
+                if tp.Radius ~= 3 then tp.Radius = 3 end
+                if tp.Color ~= hc then tp.Color = hc end
+                if not tp.Visible then tp.Visible = true end
             end
-        else
-            e.velLine.Visible, e.velTip.Visible = false, false
         end
-    else
-        e.velLine.Visible, e.velTip.Visible = false, false
     end
     if cOffScr then
         local vpSize = cam.ViewportSize
         local sp = cam:WorldToViewportPoint(centre)
         local onScreen = sp.Z > 0
             and sp.X >= 0 and sp.X <= vpSize.X and sp.Y >= 0 and sp.Y <= vpSize.Y
-        if onScreen then
-            e.arrow.Visible, e.arrowDist.Visible = false, false
-        else
+        if not onScreen then
             local rel = cam.CFrame:PointToObjectSpace(centre)
             local d = Vector2.new(rel.X, -rel.Y)
             d = d.Magnitude > 1e-4 and d.Unit or Vector2.new(0, -1)
+
             local mid = Vector2.new(vpSize.X / 2, vpSize.Y / 2)
             local at = mid + d * (math.min(vpSize.X, vpSize.Y) * C.OffScreenRadius)
-            e.arrow.Visible = true
-            e.arrow.Position = UDim2.fromOffset(at.X, at.Y)
-            e.arrow.Rotation = math.deg(math.atan2(d.Y, d.X))
-            for _, bar in ipairs(e.arrow:GetChildren()) do
-                if bar:IsA("Frame") then bar.BackgroundColor3 = hc end
-            end
-            e.arrowDist.Visible = true
-            e.arrowDist.Position = UDim2.fromOffset(at.X - d.X * 24, at.Y - d.Y * 24)
-            e.arrowDist.Text = math.floor(dist) .. "m"
+            local perp = Vector2.new(-d.Y, d.X)
+            local tip = at + d * 11
+            local back = at - d * 5
+            local tri = take("tri")
+            tri.PointA = tip
+            tri.PointB = back + perp * 7
+            tri.PointC = back - perp * 7
+            if tri.Color ~= hc then tri.Color = hc end
+            if not tri.Visible then tri.Visible = true end
+            local lbl = take("text")
+            lbl.Position = at - d * 22
+            local txt = math.floor(dist) .. "m"
+            if lbl.Text ~= txt then lbl.Text = txt end
+            if lbl.Color ~= hc then lbl.Color = hc end
+            if not lbl.Visible then lbl.Visible = true end
         end
-    else
-        e.arrow.Visible, e.arrowDist.Visible = false, false
     end
 end
+
 function ESP:Init()
     if started then return self end
     started = true
@@ -800,9 +812,11 @@ function ESP:Init()
         for _, c in ipairs(vpCams) do
             c.CFrame, c.FieldOfView = cam.CFrame, cam.FieldOfView
         end
+
         if not C.Enabled then
             if not disabledDone then
                 for _, e in pairs(tracked) do pcall(hideEntry, e) end
+                sweepPool(); sweepCards()
                 echoVP.Visible, hullVP.Visible, bodyVP.Visible = false, false, false
                 disabledDone = true
             end
@@ -855,6 +869,9 @@ function ESP:Init()
             local ok, err = pcall(renderEntry, e.model, e, cam, camPos, now, doRay)
             if not ok and C.Debug then warn("[ESP] " .. tostring(err)) end
         end
+        sweepPool()
+        sweepCards()
+
         echoVP.Visible = C.Enabled and wantEcho
         hullVP.Visible = C.Enabled and wantHull
         bodyVP.Visible = C.Enabled and wantBody
@@ -878,7 +895,6 @@ function ESP:Track(model, opts)
         model = model, opts = opts, parts = {}, echo = {}, hist = {},
         phase = (trackSeq % 20) * 0.1,
     }
-    buildEntryGui(e)
     tracked[model] = e
     rebuildParts(e)
     return e
@@ -962,6 +978,8 @@ function ESP:Destroy()
     for _, conn in ipairs(panelConns) do pcall(function() conn:Disconnect() end) end
     table.clear(panelConns)
     if renderConn then renderConn:Disconnect(); renderConn = nil end
+    destroyPools()
+    cardPool, cardUsed, cardPeak = {}, 0, 0
     if gui then pcall(function() gui:Destroy() end) end
 end
 function ESP:CreatePanel(hotkey)
