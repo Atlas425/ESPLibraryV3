@@ -76,6 +76,8 @@ local playerAddedConn
 local playerLeftConn
 local panelConns = {}
 local wantHull, wantBody, wantEcho = false, false, false
+local disabledDone = false
+
 local function create(cls, props)
     local i = Instance.new(cls)
     for k, v in pairs(props) do i[k] = v end
@@ -463,13 +465,17 @@ local function rebuildParts(e)
     e.discSet = {}
     for _, p in ipairs(list) do e.discSet[p] = true end
     e.lastRebuild = os.clock()
-end
+    e.ref = nil
 
+    e.hidden = false
+end
 local rayParams = RaycastParams.new()
 rayParams.FilterType = Enum.RaycastFilterType.Exclude
 rayParams.IgnoreWater = true
 local lastRay = 0
 local function hideEntry(e)
+    if e.hidden then return end
+    e.hidden = true
     for _, f in ipairs(e.ring or {}) do f.Visible = false end
     e.card.Visible, e.leader.Visible = false, false
     e.velLine.Visible, e.velTip.Visible = false, false
@@ -486,6 +492,25 @@ local function hideEntry(e)
 end
 local function renderEntry(model, e, cam, camPos, now, doRay)
     local parts = e.parts
+    local oc        = e.opts and e.opts.config
+    local cMaxDist  = cfgOf(oc, "MaxDistance")
+    local ref = e.ref
+    if not ref or not ref.Parent then
+        ref = next(parts)
+        e.ref = ref
+    end
+    if ref and (ref.Position - camPos).Magnitude > cMaxDist + 40 then
+        hideEntry(e)
+        return
+    end
+    local cEcho     = cfgOf(oc, "Echo")
+    local cRing     = cfgOf(oc, "Ring")
+    local cCard     = cfgOf(oc, "Card")
+    local cVelocity = cfgOf(oc, "Velocity")
+    local cHull     = cfgOf(oc, "Hull")
+    local cBody     = cfgOf(oc, "Body")
+    local cStyle    = cfgOf(oc, "Style")
+    local cOffScr   = cfgOf(oc, "OffScreen")
 
     if now - (e.lastRebuild or 0) > 2 then
         e.lastRebuild = now
@@ -501,7 +526,9 @@ local function renderEntry(model, e, cam, camPos, now, doRay)
             parts = e.parts
         end
     end
-    local ordered = {}
+    local ordered = e.ordered
+    if not ordered then ordered = {}; e.ordered = ordered
+    else table.clear(ordered) end
     for p in pairs(parts) do ordered[#ordered + 1] = p end
     local centre, size = partsBBox(ordered)
     if not centre then
@@ -509,16 +536,12 @@ local function renderEntry(model, e, cam, camPos, now, doRay)
         hideEntry(e)
         return
     end
-    local oc        = e.opts and e.opts.config
-    local cMaxDist  = cfgOf(oc, "MaxDistance")
-    local cEcho     = cfgOf(oc, "Echo")
-    local cRing     = cfgOf(oc, "Ring")
-    local cCard     = cfgOf(oc, "Card")
-    local cVelocity = cfgOf(oc, "Velocity")
-    local cHull     = cfgOf(oc, "Hull")
-    local cBody     = cfgOf(oc, "Body")
-    local cStyle    = cfgOf(oc, "Style")
-    local cOffScr   = cfgOf(oc, "OffScreen")
+    local dist = (centre - camPos).Magnitude
+    if not (C.Enabled and dist <= cMaxDist) then
+        hideEntry(e)
+        return
+    end
+    e.hidden = false
     if cHull then wantHull = true end
     if cBody then wantBody = true end
     if cEcho then wantEcho = true end
@@ -526,13 +549,11 @@ local function renderEntry(model, e, cam, camPos, now, doRay)
     local hp = math.clamp(cur / math.max(max, 1), 0, 1)
     local forced = e.opts and optValue(e.opts.color, model) or nil
     local hc = forced or healthColor(hp)
-    local dist = (centre - camPos).Magnitude
-    local show = C.Enabled and dist <= cMaxDist
-
     if e.lastHP and cur < e.lastHP - 0.01 then e.flashUntil = now + C.FlashTime end
     e.lastHP = cur
     local flashing = C.DamageFlash and e.flashUntil and now < e.flashUntil
     local style = STYLES[cStyle] and cStyle or "Gradient"
+
     if doRay and C.OcclusionSplit then
         rayParams.FilterDescendantsInstances = { model, LocalPlayer.Character or model }
     end
@@ -541,8 +562,7 @@ local function renderEntry(model, e, cam, camPos, now, doRay)
             if pair.hull then pcall(function() pair.hull:Destroy() end) end
             if pair.body then pcall(function() pair.body:Destroy() end) end
             parts[real] = nil
-        elseif show then
-
+        else
             local sz = real.Size
             if cHull then
                 local t = C.HullThick
@@ -578,12 +598,9 @@ local function renderEntry(model, e, cam, camPos, now, doRay)
             pair.body.Material = mat
             pair.body.Color = col
             pair.body.Transparency = alpha
-        else
-            pair.hull.Transparency = 1
-            pair.body.Transparency = 1
         end
     end
-    if cEcho and show and dist <= C.EchoMaxDistance then
+    if cEcho and dist <= C.EchoMaxDistance then
         local want = math.max(1, math.floor(C.EchoCount))
         if now - (e.lastSample or 0) >= C.EchoSpacing then
             e.lastSample = now
@@ -621,7 +638,7 @@ local function renderEntry(model, e, cam, camPos, now, doRay)
     elseif #e.echo > 0 then
         clearEcho(e); e.hist = {}
     end
-    if cRing and show then
+    if cRing then
         local base = centre - Vector3.new(0, size.Y / 2, 0)
         local lit = math.floor(#e.ring * hp + 0.5)
         for i = 1, #e.ring do
@@ -644,7 +661,7 @@ local function renderEntry(model, e, cam, camPos, now, doRay)
         for _, f in ipairs(e.ring) do f.Visible = false end
     end
 
-    if cCard and show then
+    if cCard then
         local sp = cam:WorldToViewportPoint(centre + Vector3.new(0, size.Y / 2 + 1.2, 0))
         if sp.Z > 0 then
             local at = Vector2.new(sp.X, sp.Y)
@@ -666,7 +683,7 @@ local function renderEntry(model, e, cam, camPos, now, doRay)
         e.card.Visible, e.leader.Visible = false, false
     end
 
-    if cVelocity and show then
+    if cVelocity then
         local ref
         for p in pairs(parts) do ref = p break end
         local vel = ref and ref.AssemblyLinearVelocity or Vector3.zero
@@ -691,7 +708,7 @@ local function renderEntry(model, e, cam, camPos, now, doRay)
     else
         e.velLine.Visible, e.velTip.Visible = false, false
     end
-    if cOffScr and C.Enabled and dist <= cMaxDist then
+    if cOffScr then
         local vpSize = cam.ViewportSize
         local sp = cam:WorldToViewportPoint(centre)
         local onScreen = sp.Z > 0
@@ -728,6 +745,15 @@ function ESP:Init()
         for _, c in ipairs(vpCams) do
             c.CFrame, c.FieldOfView = cam.CFrame, cam.FieldOfView
         end
+        if not C.Enabled then
+            if not disabledDone then
+                for _, e in pairs(tracked) do pcall(hideEntry, e) end
+                echoVP.Visible, hullVP.Visible, bodyVP.Visible = false, false, false
+                disabledDone = true
+            end
+            return
+        end
+        disabledDone = false
         wantHull, wantBody, wantEcho = false, false, false
         local now = os.clock()
         local doRay = false
