@@ -31,14 +31,17 @@ ESP.Config = {
     Echo             = true,
     EchoCount        = 8,
     EchoSpacing      = 0.07,
+    EchoMaxDistance  = 150,
     EchoTint         = true,
     EchoTailColor    = Color3.fromRGB(150, 40, 220),
     Velocity         = true,
     VelocitySecs     = 0.45,
+
     OffScreen        = true,
     OffScreenRadius  = 0.42,
     DamageFlash      = true,
     FlashTime        = 0.16,
+
     Accent           = Color3.fromRGB(120, 240, 255),
     Debug            = false,
 
@@ -70,18 +73,29 @@ local playerConns = {}
 local playerAddedConn
 local playerLeftConn
 local panelConns = {}
+local wantHull, wantBody, wantEcho = false, false, false
 local function create(cls, props)
     local i = Instance.new(cls)
     for k, v in pairs(props) do i[k] = v end
     return i
 end
-
 local function healthColor(f)
     f = math.clamp(f, 0, 1)
     if f > 0.5 then
         return Color3.fromRGB(255, 210, 60):Lerp(Color3.fromRGB(80, 255, 210), (f - 0.5) * 2)
     end
     return Color3.fromRGB(255, 55, 90):Lerp(Color3.fromRGB(255, 210, 60), f * 2)
+end
+local PER_TARGET = {
+    MaxDistance = true, Echo = true, Ring = true, Card = true,
+    Velocity = true, Hull = true, Body = true, Style = true, OffScreen = true,
+}
+local function cfgOf(oc, k)
+    if oc then
+        local v = oc[k]
+        if v ~= nil then return v end
+    end
+    return C[k]
 end
 local function optValue(v, model)
     if type(v) == "function" then
@@ -90,7 +104,6 @@ local function optValue(v, model)
     end
     return v
 end
-
 local function line2D(f, a, b, thick)
     local d = b - a
     local len = d.Magnitude
@@ -492,16 +505,30 @@ local function renderEntry(model, e, cam, camPos, now, doRay)
         hideEntry(e)
         return
     end
+    local oc        = e.opts and e.opts.config
+    local cMaxDist  = cfgOf(oc, "MaxDistance")
+    local cEcho     = cfgOf(oc, "Echo")
+    local cRing     = cfgOf(oc, "Ring")
+    local cCard     = cfgOf(oc, "Card")
+    local cVelocity = cfgOf(oc, "Velocity")
+    local cHull     = cfgOf(oc, "Hull")
+    local cBody     = cfgOf(oc, "Body")
+    local cStyle    = cfgOf(oc, "Style")
+    local cOffScr   = cfgOf(oc, "OffScreen")
+    if cHull then wantHull = true end
+    if cBody then wantBody = true end
+    if cEcho then wantEcho = true end
     local cur, max = resolveHealth(e, now)
     local hp = math.clamp(cur / math.max(max, 1), 0, 1)
     local forced = e.opts and optValue(e.opts.color, model) or nil
     local hc = forced or healthColor(hp)
     local dist = (centre - camPos).Magnitude
-    local show = C.Enabled and dist <= C.MaxDistance
+    local show = C.Enabled and dist <= cMaxDist
+
     if e.lastHP and cur < e.lastHP - 0.01 then e.flashUntil = now + C.FlashTime end
     e.lastHP = cur
     local flashing = C.DamageFlash and e.flashUntil and now < e.flashUntil
-    local style = STYLES[C.Style] and C.Style or "Gradient"
+    local style = STYLES[cStyle] and cStyle or "Gradient"
     if doRay and C.OcclusionSplit then
         rayParams.FilterDescendantsInstances = { model, LocalPlayer.Character or model }
     end
@@ -513,11 +540,19 @@ local function renderEntry(model, e, cam, camPos, now, doRay)
         elseif show then
 
             local sz = real.Size
-            local t = C.HullThick
-            pair.hull.Size = sz + Vector3.new(t, t, t) * 2
-            pair.hull.CFrame = real.CFrame
-            pair.hull.Color = C.HullByHealth and hc or C.HullColor
-            pair.hull.Transparency = C.Hull and 0 or 1
+            if cHull then
+                local t = C.HullThick
+                pair.hull.Size = sz + Vector3.new(t, t, t) * 2
+                pair.hull.CFrame = real.CFrame
+                pair.hull.Color = C.HullByHealth and hc or C.HullColor
+                pair.hull.Transparency = 0
+            elseif pair.hull.Transparency ~= 1 then
+                pair.hull.Transparency = 1
+            end
+            if not cBody then
+                if pair.body.Transparency ~= 1 then pair.body.Transparency = 1 end
+                continue
+            end
             pair.body.Size = sz
             pair.body.CFrame = real.CFrame
             if doRay and C.OcclusionSplit then
@@ -535,15 +570,16 @@ local function renderEntry(model, e, cam, camPos, now, doRay)
             elseif style == "Ghost" then alpha = math.max(C.BodyTransparency, 0.78) end
             if forced then col = forced end
             if flashing then col, alpha = Color3.new(1,1,1), math.min(alpha, 0.1) end
+
             pair.body.Material = mat
             pair.body.Color = col
-            pair.body.Transparency = C.Body and alpha or 1
+            pair.body.Transparency = alpha
         else
             pair.hull.Transparency = 1
             pair.body.Transparency = 1
         end
     end
-    if C.Echo and show then
+    if cEcho and show and dist <= C.EchoMaxDistance then
         local want = math.max(1, math.floor(C.EchoCount))
         if now - (e.lastSample or 0) >= C.EchoSpacing then
             e.lastSample = now
@@ -581,7 +617,7 @@ local function renderEntry(model, e, cam, camPos, now, doRay)
     elseif #e.echo > 0 then
         clearEcho(e); e.hist = {}
     end
-    if C.Ring and show then
+    if cRing and show then
         local base = centre - Vector3.new(0, size.Y / 2, 0)
         local lit = math.floor(#e.ring * hp + 0.5)
         for i = 1, #e.ring do
@@ -604,7 +640,7 @@ local function renderEntry(model, e, cam, camPos, now, doRay)
         for _, f in ipairs(e.ring) do f.Visible = false end
     end
 
-    if C.Card and show then
+    if cCard and show then
         local sp = cam:WorldToViewportPoint(centre + Vector3.new(0, size.Y / 2 + 1.2, 0))
         if sp.Z > 0 then
             local at = Vector2.new(sp.X, sp.Y)
@@ -626,7 +662,7 @@ local function renderEntry(model, e, cam, camPos, now, doRay)
         e.card.Visible, e.leader.Visible = false, false
     end
 
-    if C.Velocity and show then
+    if cVelocity and show then
         local ref
         for p in pairs(parts) do ref = p break end
         local vel = ref and ref.AssemblyLinearVelocity or Vector3.zero
@@ -651,7 +687,7 @@ local function renderEntry(model, e, cam, camPos, now, doRay)
     else
         e.velLine.Visible, e.velTip.Visible = false, false
     end
-    if C.OffScreen and C.Enabled and dist <= C.MaxDistance then
+    if cOffScr and C.Enabled and dist <= cMaxDist then
         local vpSize = cam.ViewportSize
         local sp = cam:WorldToViewportPoint(centre)
         local onScreen = sp.Z > 0
@@ -688,9 +724,7 @@ function ESP:Init()
         for _, c in ipairs(vpCams) do
             c.CFrame, c.FieldOfView = cam.CFrame, cam.FieldOfView
         end
-        echoVP.Visible = C.Enabled and C.Echo
-        hullVP.Visible = C.Enabled and C.Hull
-        bodyVP.Visible = C.Enabled and C.Body
+        wantHull, wantBody, wantEcho = false, false, false
         local now = os.clock()
         local doRay = false
         if now - lastRay >= 1 / math.max(C.RayHz, 1) then doRay = true; lastRay = now end
@@ -703,6 +737,9 @@ function ESP:Init()
                 if not ok and C.Debug then warn("[ESP] " .. tostring(err)) end
             end
         end
+        echoVP.Visible = C.Enabled and wantEcho
+        hullVP.Visible = C.Enabled and wantHull
+        bodyVP.Visible = C.Enabled and wantBody
     end)
     return self
 end
@@ -710,13 +747,20 @@ end
 function ESP:Track(model, opts)
     if typeof(model) ~= "Instance" or tracked[model] then return end
     if not started then self:Init() end
+    if opts and opts.config then
+        for k in pairs(opts.config) do
+            if not PER_TARGET[k] then
+                warn(("[ESP] opts.config.%s is not overridable per target; set ESP.Config.%s instead")
+                    :format(tostring(k), tostring(k)))
+            end
+        end
+    end
     local e = { model = model, opts = opts, parts = {}, echo = {}, hist = {} }
     buildEntryGui(e)
     tracked[model] = e
     rebuildParts(e)
     return e
 end
-
 function ESP:Refresh(model)
     local e = tracked[model]
     if e then e.hres = nil rebuildParts(e) end
